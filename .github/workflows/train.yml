@@ -2,6 +2,12 @@ name: Train model artifacts
 
 on:
   workflow_dispatch: {}
+
+  # Автопереобучение по расписанию (каждый понедельник 03:00 UTC)
+  schedule:
+    - cron: "0 3 * * 1"
+
+  # Автозапуск при изменениях кода/зависимостей
   push:
     branches: ["main"]
     paths:
@@ -17,6 +23,7 @@ permissions:
 jobs:
   train:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
 
     steps:
       - name: Checkout repo
@@ -32,6 +39,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # CPU PyTorch (на GitHub runner ставится стабильнее, чем просто "torch")
+          pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
+          # Остальные зависимости
           pip install -r requirements.txt
 
       - name: Generate synthetic data
@@ -44,7 +54,7 @@ jobs:
 
       - name: Train PyTorch LSTM
         run: |
-          python -m src.train_torch --data data/sales.csv --lookback 28 --horizon 14 --test-days 120 --val-days 60 --epochs 15 --batch 512 --device cpu
+          python -m src.train_torch --data data/sales.csv --lookback 28 --horizon 14 --test-days 120 --val-days 60 --epochs 20 --batch 512 --device cpu
 
       - name: Build report figures
         run: |
