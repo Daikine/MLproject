@@ -292,6 +292,7 @@ def main():
 
         st.markdown("---")
         st.subheader("Отображение")
+        show_metrics = st.toggle("Показывать метрики", value=False)
         show_base = st.toggle("Показывать Baseline", value=True)
         show_nn = st.toggle("Показывать LSTM", value=True)
 
@@ -391,15 +392,16 @@ def main():
 
         # Baseline & NN metrics
         st.divider()
-        st.subheader("📊 Метрики (на тесте)")
-        bm = load_baseline_metrics_for_sku(sku)
-        if bm:
-            st.caption("Baseline MA(7)")
-            st.json(bm)
+        if show_metrics:
+          st.subheader("📊 Метрики (на тесте)")
+          bm = load_baseline_metrics_for_sku(sku)
+         if bm:
+           st.caption("Baseline MA(7)")
+           st.json(bm)
 
-        if nn_metrics:
-            st.caption("LSTM")
-            st.json(nn_metrics)
+         if nn_metrics:
+          st.caption("LSTM")
+          st.json(nn_metrics)
 
         # Anomaly / sanity checks
         if nn is not None:
