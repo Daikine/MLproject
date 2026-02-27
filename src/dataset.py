@@ -25,6 +25,10 @@ def _add_calendar(df: pd.DataFrame) -> pd.DataFrame:
     out["month_sin"] = np.sin(2*np.pi*out["month"]/12.0)
     out["month_cos"] = np.cos(2*np.pi*out["month"]/12.0)
 
+def add_calendar_feats(df: pd.DataFrame) -> pd.DataFrame:
+    """Публичная обёртка для добавления календарных признаков."""
+    return _add_calendar(df)
+
     if "is_weekend" not in out.columns:
         out["is_weekend"] = (out["dow"] >= 5).astype(int)
     if "is_holiday" not in out.columns:
