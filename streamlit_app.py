@@ -1,26 +1,4 @@
-"""
-streamlit_app.py
-
-MVP ML-сервиса прогнозирования спроса (строго по кейсу).
-
-Функциональность:
-1) Выбор SKU из синтетических данных → прогноз на 7-14 дней
-2) Ввод сценария (множитель цены + длительность промо) → прогноз
-3) Загрузка CSV (date,sales + опционально price,promo_flag,discount_pct,...) → прогноз
-
-Важно:
-- НЕ показываем «сырой датасет» таблицей по умолчанию.
-- Показываем KPI и график "история + прогноз".
-- Для NN используем PyTorch LSTM (артефакты в artifacts/SKU_xx/...).
-
-Запуск локально:
-    pip install -r requirements.txt
-    streamlit run streamlit_app.py
-
-Деплой Streamlit Cloud:
-- выбрать этот файл как entrypoint (Main file path = streamlit_app.py).
-"""
-
+# streamlit_app.py
 from __future__ import annotations
 
 import json
@@ -35,57 +13,81 @@ import matplotlib.pyplot as plt
 import torch
 import joblib
 
-# --- Импорты из проекта ---
+from src.dataset import add_calendar_feats, FEATURE_COLS
 from src.models.lstm import LSTMForecaster
-
-# FEATURE_COLS нужен 100%, add_calendar_feats может отсутствовать по имени, поэтому делаем fallback
-try:
-    from src.dataset import add_calendar_feats, FEATURE_COLS  # type: ignore
-except Exception:
-    from src.dataset import FEATURE_COLS  # type: ignore
-
-    def add_calendar_feats(df: pd.DataFrame) -> pd.DataFrame:
-        """Fallback: добавление календарных признаков (если нет add_calendar_feats в src.dataset)."""
-        out = df.copy()
-        out["date"] = pd.to_datetime(out["date"])
-        out["dow"] = out["date"].dt.dayofweek.astype(int)
-        out["month"] = out["date"].dt.month.astype(int)
-        out["dow_sin"] = np.sin(2 * np.pi * out["dow"] / 7.0)
-        out["dow_cos"] = np.cos(2 * np.pi * out["dow"] / 7.0)
-        out["month_sin"] = np.sin(2 * np.pi * out["month"] / 12.0)
-        out["month_cos"] = np.cos(2 * np.pi * out["month"] / 12.0)
-
-        if "is_weekend" not in out.columns:
-            out["is_weekend"] = (out["dow"] >= 5).astype(int)
-        if "is_holiday" not in out.columns:
-            out["is_holiday"] = 0
-        if "promo_flag" not in out.columns:
-            out["promo_flag"] = 0
-        if "discount_pct" not in out.columns:
-            out["discount_pct"] = 0.0
-        if "price" not in out.columns:
-            out["price"] = 1.0
-        return out
 
 
 DATA_PATH = Path("data/sales.csv")
 ART_DIR = Path("artifacts")
 
 
-def load_data(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path, parse_dates=["date"])
+# ---------------------------
+# UI polish (light, clean)
+# ---------------------------
+def inject_css():
+    st.markdown(
+        """
+        <style>
+          /* Page width */
+          .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+
+          /* Hide Streamlit chrome */
+          #MainMenu {visibility: hidden;}
+          footer {visibility: hidden;}
+          header {visibility: hidden;}
+
+          /* Cards */
+          .card {
+            border: 1px solid rgba(49, 51, 63, 0.12);
+            border-radius: 16px;
+            padding: 14px 14px;
+            background: white;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+          }
+          .card h4 { margin: 0 0 0.25rem 0; font-size: 0.95rem; color: rgba(49, 51, 63, 0.85); }
+          .card .big { font-size: 1.45rem; font-weight: 700; margin: 0; }
+          .muted { color: rgba(49, 51, 63, 0.65); font-size: 0.9rem; }
+
+          /* Buttons */
+          div.stButton>button {
+            border-radius: 12px;
+            padding: 0.6rem 1rem;
+            font-weight: 600;
+          }
+
+          /* Tabs spacing */
+          button[data-baseweb="tab"] { font-size: 0.95rem; }
+
+          /* Nice separators */
+          hr { margin: 1rem 0; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------
+# Data / model loading
+# ---------------------------
+@st.cache_data
+def load_data() -> pd.DataFrame:
+    df = pd.read_csv(DATA_PATH, parse_dates=["date"]).sort_values(["sku", "date"]).reset_index(drop=True)
+    # normalize column naming
+    if "promo" in df.columns and "promo_flag" not in df.columns:
+        df = df.rename(columns={"promo": "promo_flag"})
+    for col, default in [("price", 10.0), ("promo_flag", 0), ("discount_pct", 0.0), ("is_holiday", 0)]:
+        if col not in df.columns:
+            df[col] = default
+    df["is_weekend"] = (df["date"].dt.weekday >= 5).astype(int)
+    return df
+
+
+@st.cache_resource
+def load_nn_for_sku_cached(sku: str):
+    return load_nn_for_sku(sku)
 
 
 def load_nn_for_sku(sku: str):
-    """
-    Загружаем модель и скейлеры для конкретного SKU из artifacts/{sku}/
-
-    Ожидаемые файлы:
-      - model.pt (torch.save({state_dict, horizon, feature_cols, lookback, ...}))
-      - feature_scaler.joblib
-      - target_scaler.joblib
-      - metrics_nn.json (опционально)
-    """
     sku_dir = ART_DIR / sku
     model_path = sku_dir / "model.pt"
     fs_path = sku_dir / "feature_scaler.joblib"
@@ -95,154 +97,123 @@ def load_nn_for_sku(sku: str):
     if not (model_path.exists() and fs_path.exists() and ts_path.exists()):
         return None
 
-    feature_scaler = joblib.load(fs_path)
-    target_scaler = joblib.load(ts_path)
-
     ckpt = torch.load(model_path, map_location="cpu")
+    feature_cols = ckpt.get("feature_cols", FEATURE_COLS)
+    horizon_ckpt = int(ckpt.get("horizon", 14))
 
-    # Правильный формат (как в train_torch.py): dict со state_dict + метаданные
-    if isinstance(ckpt, dict) and "state_dict" in ckpt:
-        horizon_ckpt = int(ckpt.get("horizon", 14))
-        feature_cols_ckpt = ckpt.get("feature_cols", FEATURE_COLS)
+    model = LSTMForecaster(
+        n_features=len(feature_cols),
+        hidden_size=64,
+        num_layers=2,
+        dropout=0.1,
+        horizon=horizon_ckpt,
+    )
+    model.load_state_dict(ckpt["state_dict"])
+    model.eval()
 
-        model = LSTMForecaster(
-            n_features=len(feature_cols_ckpt),
-            hidden_size=64,
-            num_layers=2,
-            dropout=0.1,
-            horizon=horizon_ckpt,
-        )
-        model.load_state_dict(ckpt["state_dict"])
-        model.eval()
-    else:
-        # Запасной вариант: если в model.pt лежит чистый state_dict
-        horizon_ckpt = 14
-        feature_cols_ckpt = FEATURE_COLS
-
-        model = LSTMForecaster(
-            n_features=len(FEATURE_COLS),
-            hidden_size=64,
-            num_layers=2,
-            dropout=0.1,
-            horizon=14,
-        )
-        model.load_state_dict(ckpt)
-        model.eval()
+    fs = joblib.load(fs_path)
+    ts = joblib.load(ts_path)
 
     nn_metrics = None
     if metrics_path.exists():
         nn_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
 
-    return model, feature_scaler, target_scaler, nn_metrics, feature_cols_ckpt, horizon_ckpt
+    return model, fs, ts, list(feature_cols), horizon_ckpt, nn_metrics
 
 
+def load_baseline_metrics_for_sku(sku: str):
+    p = ART_DIR / "metrics_baselines.json"
+    if not p.exists():
+        return None
+    try:
+        rows = json.loads(p.read_text(encoding="utf-8"))
+        row = next((r for r in rows if r.get("sku") == sku and r.get("model") == "moving_avg_7"), None)
+        return row
+    except Exception:
+        return None
+
+
+# ---------------------------
+# Forecast logic
+# ---------------------------
 def make_future_frame(
     history: pd.DataFrame,
     horizon: int,
     price_mult: float,
     promo_days: int,
-    promo_where: str,
+    promo_where: str,  # "start"|"end"
+    discount: float = 0.20,
 ) -> pd.DataFrame:
-    """Делаем будущий фрейм на horizon дней для отображения и сценарных экзогенных фич."""
     last = history.sort_values("date").iloc[-1]
     start = last["date"] + pd.Timedelta(days=1)
     dates = pd.date_range(start=start, periods=horizon, freq="D")
 
     base_price = float(last.get("price", 10.0))
-    price = np.full(horizon, base_price * price_mult)
+    price = np.full(horizon, base_price * float(price_mult))
 
     promo_flag = np.zeros(horizon, dtype=int)
-    discount = np.zeros(horizon, dtype=float)
+    discount_pct = np.zeros(horizon, dtype=float)
+
     promo_days = int(max(0, min(horizon, promo_days)))
-
     if promo_days > 0:
-        if promo_where == "В начале горизонта":
-            idx = slice(0, promo_days)
-        else:
-            idx = slice(horizon - promo_days, horizon)
-        promo_flag[idx] = 1
-        discount[idx] = 0.20  # фиксируем скидку для сценария
+        sl = slice(0, promo_days) if promo_where == "start" else slice(horizon - promo_days, horizon)
+        promo_flag[sl] = 1
+        discount_pct[sl] = float(discount)
 
-    df_fut = pd.DataFrame(
+    fut = pd.DataFrame(
         {
             "date": pd.to_datetime(dates),
             "sku": last.get("sku", "SKU"),
-            "sales": np.nan,
+            "sales": 0.0,  # unknown future sales
             "price": np.round(price, 2),
             "promo_flag": promo_flag,
-            "discount_pct": np.round(discount, 3),
+            "discount_pct": np.round(discount_pct, 3),
             "is_weekend": (pd.Series(dates).dt.weekday >= 5).astype(int).values,
             "is_holiday": np.zeros(horizon, dtype=int),
         }
     )
-    return df_fut
+    return fut
 
 
 @torch.no_grad()
 def lstm_forecast(
-    model: LSTMForecaster,
-    feature_scaler,
-    target_scaler,
-    history: pd.DataFrame,
+    model,
+    fs,
+    ts,
+    feature_cols: list[str],
+    hist: pd.DataFrame,
+    fut: pd.DataFrame,
     lookback: int,
     horizon: int,
-    feature_cols: list[str],
 ) -> np.ndarray:
-    """
-    Прогноз на horizon дней (multi-step).
+    # past
+    h = add_calendar_feats(hist.sort_values("date").tail(int(lookback)).copy())
+    # future
+    f = add_calendar_feats(fut.copy())
 
-    Защита от ошибок:
-    - history приводим к DataFrame
-    - add_calendar_feats может вернуть None → тогда оставляем исходный df
-    - гарантируем наличие нужных feature_cols
-    """
-    # 1) гарантируем DataFrame
-    if not isinstance(history, pd.DataFrame):
-        history = pd.DataFrame(history)
-
-    h = history.sort_values("date").tail(int(lookback)).copy()
-
-    # 2) календарные фичи
-    try:
-        h2 = add_calendar_feats(h)
-        if isinstance(h2, pd.DataFrame):
-            h = h2
-    except Exception:
-        pass  # просто работаем с тем, что есть
-
-    # 3) гарантируем экзогенные колонки
-    defaults = {
-        "price": 1.0,
-        "promo_flag": 0,
-        "discount_pct": 0.0,
-        "is_weekend": (pd.to_datetime(h["date"]).dt.weekday >= 5).astype(int) if "date" in h.columns else 0,
-        "is_holiday": 0,
-        "dow_sin": 0.0,
-        "dow_cos": 0.0,
-        "month_sin": 0.0,
-        "month_cos": 0.0,
-        "sales": 0.0,
-    }
-
+    # ensure all columns exist
     for col in feature_cols:
         if col not in h.columns:
-            val = defaults.get(col, 0.0)
-            # если val серия (как is_weekend), то длина должна совпадать
-            h[col] = val
+            h[col] = 0.0
+        if col not in f.columns:
+            f[col] = 0.0
 
-    # 4) формируем окно
-    X = h[feature_cols].to_numpy(dtype=float)
-    Xs = feature_scaler.transform(X)
+    past_X = h[feature_cols].to_numpy(dtype=float)
+    fut_X = f[feature_cols].to_numpy(dtype=float)
 
-    x_tensor = torch.tensor(Xs, dtype=torch.float32).unsqueeze(0)  # (1, T, F)
-    pred_scaled = model(x_tensor).squeeze(0).cpu().numpy()  # (horizon_ckpt,)
+    # no leakage: future sales must be 0
+    fut_X[:, 0] = 0.0
 
-    pred = target_scaler.inverse_transform(pred_scaled.reshape(-1, 1)).reshape(-1)
-    pred = np.maximum(pred, 0.0)
-    return pred[: int(horizon)]
+    X = np.vstack([past_X, fut_X])  # (L+H, F)
+    Xs = fs.transform(X)
+
+    x_tensor = torch.tensor(Xs, dtype=torch.float32).unsqueeze(0)
+    pred_scaled = model(x_tensor).squeeze(0).cpu().numpy()
+    pred = ts.inverse_transform(pred_scaled.reshape(-1, 1)).reshape(-1)
+    return np.maximum(pred[:horizon], 0.0)
 
 
-def moving_average_future(history_sales: np.ndarray, horizon: int, window: int = 7) -> np.ndarray:
+def baseline_ma(history_sales: np.ndarray, horizon: int, window: int = 7) -> np.ndarray:
     hist = list(history_sales.astype(float))
     preds = []
     for _ in range(horizon):
@@ -253,13 +224,28 @@ def moving_average_future(history_sales: np.ndarray, horizon: int, window: int =
     return np.array(preds)
 
 
-def plot_history_forecast(dates_hist, sales_hist, dates_fut, pred_nn, pred_base):
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(dates_hist, sales_hist, label="История продаж")
-    if pred_base is not None:
-        ax.plot(dates_fut, pred_base, linestyle="--", marker="o", label="Baseline MA(7)")
-    if pred_nn is not None:
-        ax.plot(dates_fut, pred_nn, linestyle="--", marker="o", label="LSTM прогноз")
+def compute_kpis(pred: np.ndarray):
+    total = float(np.sum(pred))
+    avg = float(np.mean(pred))
+    peak = float(np.max(pred))
+    peak_day = int(np.argmax(pred) + 1)
+    return total, avg, peak, peak_day
+
+
+def plot_forecast(d_hist, y_hist, d_fut, y_base, y_nn, band=None, show_base=True, show_nn=True):
+    fig, ax = plt.subplots(figsize=(11, 4))
+    ax.plot(d_hist, y_hist, label="История", linewidth=2)
+
+    if show_base and y_base is not None:
+        ax.plot(d_fut, y_base, "--", marker="o", label="Baseline MA(7)")
+
+    if show_nn and y_nn is not None:
+        ax.plot(d_fut, y_nn, "--", marker="o", label="LSTM прогноз")
+
+    if band is not None and y_nn is not None:
+        lo, hi = band
+        ax.fill_between(d_fut, lo, hi, alpha=0.15, label="Интервал (оценка)")
+
     ax.set_xlabel("Дата")
     ax.set_ylabel("Продажи")
     ax.grid(True)
@@ -268,187 +254,224 @@ def plot_history_forecast(dates_hist, sales_hist, dates_fut, pred_nn, pred_base)
     return fig
 
 
+# ---------------------------
+# App
+# ---------------------------
+def card(title: str, big: str, sub: str = ""):
+    st.markdown(
+        f"""
+        <div class="card">
+          <h4>{title}</h4>
+          <div class="big">{big}</div>
+          <div class="muted">{sub}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main():
-    st.set_page_config(page_title="Прогноз спроса", layout="wide")
-    st.title("Нейросетевая модель для прогнозирования спроса на товары")
+    st.set_page_config(page_title="Demand Forecasting", layout="wide")
+    inject_css()
+
+    st.markdown("## 🔮 Прогноз спроса на товары (MVP)")
+    st.markdown(
+        "<div class='muted'>Сервис прогнозирует спрос на 7–14 дней вперёд. "
+        "Сценарий цены/промо влияет на прогноз (LSTM обучена с будущими экзогенными признаками).</div>",
+        unsafe_allow_html=True,
+    )
+    st.divider()
 
     if not DATA_PATH.exists():
-        st.error(
-            "Нет данных data/sales.csv.\n\n"
-            "Сначала сгенерируй их: `python data/generate_data.py --output data/sales.csv ...`"
-        )
-        return
+        st.error("Нет `data/sales.csv`. Сначала сгенерируй данные или дождись GitHub Actions.")
+        st.stop()
 
-    df = load_data(DATA_PATH)
-    df = df.sort_values(["sku", "date"]).reset_index(drop=True)
-
-    if "promo" in df.columns and "promo_flag" not in df.columns:
-        df = df.rename(columns={"promo": "promo_flag"})
-
+    df = load_data()
     skus = sorted(df["sku"].unique())
 
+    # Sidebar controls
     with st.sidebar:
-        st.header("Панель управления")
-        mode = st.selectbox(
-            "Режим",
-            ["Демо (выбор товара)", "Сценарий (ввод параметров)", "Загрузка CSV"],
-            index=0,
-        )
-        horizon = st.slider("Горизонт прогноза (дней)", 7, 14, 14)
+        st.header("⚙️ Управление")
+        sku = st.selectbox("SKU", skus)
+        horizon = st.slider("Горизонт (дней)", 7, 14, 14)
+        lookback = st.slider("Окно истории (lookback)", 14, 60, 28)
 
-    # =======================
-    # 1) ДЕМО / СЦЕНАРИЙ
-    # =======================
-    if mode in {"Демо (выбор товара)", "Сценарий (ввод параметров)"}:
-        with st.sidebar:
-            sku = st.selectbox("Товар (SKU)", skus)
-            lookback = st.slider("Окно истории (lookback)", 14, 60, 28)
+        st.markdown("---")
+        st.subheader("Отображение")
+        show_base = st.toggle("Показывать Baseline", value=True)
+        show_nn = st.toggle("Показывать LSTM", value=True)
 
-            price_mult = 1.0
-            promo_days = 0
-            promo_where = "В начале горизонта"
+        st.markdown("---")
+        st.subheader("Сценарий (A)")
+        price_mult_a = st.number_input("Цена x (A)", 0.5, 2.0, 1.0, 0.05)
+        promo_days_a = st.slider("Промо дней (A)", 0, 14, 0)
+        promo_where_a = st.radio("Промо где (A)", ["В начале", "В конце"], horizontal=True)
+        promo_where_a_key = "start" if promo_where_a == "В начале" else "end"
 
-            if mode == "Сценарий (ввод параметров)":
-                st.subheader("Сценарий")
-                price_mult = st.number_input("Множитель цены (например 0.9 = дешевле)", 0.5, 2.0, 1.0, 0.05)
-                promo_days = st.slider("Сколько дней промо", 0, 14, 0)
-                promo_where = st.selectbox("Где промо", ["В начале горизонта", "В конце горизонта"], index=0)
+        st.markdown("---")
+        st.subheader("Сценарий (B) — сравнение")
+        enable_b = st.toggle("Включить сценарий B", value=False)
+        price_mult_b = st.number_input("Цена x (B)", 0.5, 2.0, 1.1, 0.05, disabled=not enable_b)
+        promo_days_b = st.slider("Промо дней (B)", 0, 14, 7, disabled=not enable_b)
+        promo_where_b = st.radio("Промо где (B)", ["В начале", "В конце"], horizontal=True, disabled=not enable_b)
+        promo_where_b_key = "start" if promo_where_b == "В начале" else "end"
 
-            run = st.button("Рассчитать прогноз")
+        st.markdown("---")
+        run = st.button("🚀 Рассчитать прогноз", use_container_width=True)
 
-        if not run:
-            st.info("Выбери параметры и нажми «Рассчитать прогноз».")
-            return
+    if not run:
+        st.info("Выбери SKU и параметры в боковой панели, затем нажми **Рассчитать прогноз**.")
+        st.stop()
 
-        hist = df[df["sku"] == sku].sort_values("date").reset_index(drop=True)
-        fut = make_future_frame(hist, horizon, price_mult, promo_days, promo_where)
+    # History
+    hist = df[df["sku"] == sku].sort_values("date").reset_index(drop=True)
+    d_hist = hist["date"].tail(180)
+    y_hist = hist["sales"].tail(180)
 
-        base_pred = moving_average_future(hist["sales"].values, horizon=horizon, window=7)
+    # Baseline
+    base = baseline_ma(hist["sales"].values, horizon=horizon, window=7)
 
-        nn_pack = load_nn_for_sku(sku)
-        nn_pred = None
-        nn_metrics = None
+    # Load NN
+    pack = load_nn_for_sku_cached(sku)
+    nn = None
+    nn_metrics = None
+    band = None
 
-        if nn_pack is not None:
-            model, fs, ts, nn_metrics, feature_cols_ckpt, horizon_ckpt = nn_pack
+    fut_a = make_future_frame(hist, horizon, price_mult_a, promo_days_a, promo_where_a_key)
+    d_fut = fut_a["date"]
 
-            # прогноз на выбранный horizon (не больше horizon из чекпоинта)
-            horizon_used = min(int(horizon), int(horizon_ckpt))
-            nn_pred = lstm_forecast(
-                model=model,
-                feature_scaler=fs,
-                target_scaler=ts,
-                history=hist,
-                lookback=int(lookback),
-                horizon=horizon_used,
-                feature_cols=list(feature_cols_ckpt),
-            )
+    if pack is not None:
+        model, fs, ts, fcols, h_ckpt, nn_metrics = pack
+        horizon_used = min(horizon, h_ckpt)
 
-            # если пользователь выбрал horizon больше, дополним хвост последним значением
-            if horizon_used < horizon:
-                nn_pred = np.pad(nn_pred, (0, horizon - horizon_used), constant_values=float(nn_pred[-1]))
+        nn_a = lstm_forecast(model, fs, ts, fcols, hist, fut_a, lookback, horizon_used)
+        if horizon_used < horizon:
+            nn_a = np.pad(nn_a, (0, horizon - horizon_used), constant_values=float(nn_a[-1]))
+        nn = nn_a
 
-        # Layout
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            fig = plot_history_forecast(
-                hist["date"].tail(180),
-                hist["sales"].tail(180),
-                fut["date"],
-                nn_pred,
-                base_pred,
-            )
-            st.pyplot(fig)
+        # “интервал” — очень грубая оценка: используем RMSE модели из metrics_nn.json, если есть
+        if nn_metrics and "rmse" in nn_metrics:
+            sigma = float(nn_metrics["rmse"])
+            lo = np.maximum(nn - 1.0 * sigma, 0.0)
+            hi = np.maximum(nn + 1.0 * sigma, 0.0)
+            band = (lo, hi)
 
-        with c2:
-            st.subheader("Метрики")
+    # KPI blocks
+    col1, col2, col3, col4 = st.columns(4)
+    total_b, avg_b, peak_b, peak_day_b = compute_kpis(base)
+    with col1:
+        card("Baseline: суммарный спрос", f"{total_b:.0f}", f"Среднее/день: {avg_b:.1f}")
+    with col2:
+        card("Baseline: пик", f"{peak_b:.0f}", f"День пика: {peak_day_b}")
 
-            # baseline metrics: artifacts/metrics_baselines.json это LIST, найдём строку для sku+moving_avg_7
-            base_metrics_file = ART_DIR / "metrics_baselines.json"
-            if base_metrics_file.exists():
-                bm = json.loads(base_metrics_file.read_text(encoding="utf-8"))
-                row = next((r for r in bm if r.get("sku") == sku and r.get("model") == "moving_avg_7"), None)
-                if row:
-                    st.write("**Baseline MA(7)**")
-                    st.json(row)
-                else:
-                    st.info("Baseline метрики не найдены для выбранного SKU.")
-            else:
-                st.info("Файл baseline метрик ещё не создан (запусти evaluate_baselines/train workflow).")
-
-            if nn_metrics is not None:
-                st.write("**LSTM**")
-                st.json(nn_metrics)
-            else:
-                st.warning(
-                    "Артефакты LSTM не найдены для этого SKU.\n\n"
-                    "Запусти обучение: `python -m src.train_torch --data data/sales.csv ...` "
-                    "или дождись завершения GitHub Actions."
-                )
-
-            st.subheader("Сценарий")
-            st.write(f"SKU: **{sku}**")
-            st.write(f"Горизонт: **{horizon}** дней")
-            if mode == "Сценарий (ввод параметров)":
-                st.write(f"Множитель цены: **{price_mult:.2f}**")
-                st.write(f"Промо дней: **{promo_days}** ({promo_where})")
-
-    # =======================
-    # 2) ЗАГРУЗКА CSV
-    # =======================
+    if nn is not None:
+        total_n, avg_n, peak_n, peak_day_n = compute_kpis(nn)
+        with col3:
+            card("LSTM: суммарный спрос", f"{total_n:.0f}", f"Среднее/день: {avg_n:.1f}")
+        with col4:
+            card("LSTM: пик", f"{peak_n:.0f}", f"День пика: {peak_day_n}")
     else:
-        with st.sidebar:
-            uploaded = st.file_uploader("CSV (date,sales + optional price,promo_flag,discount_pct,...)", type=["csv"])
-            run = st.button("Рассчитать прогноз")
+        with col3:
+            card("LSTM", "нет модели", "Нет artifacts для этого SKU")
+        with col4:
+            card("Подсказка", "Запусти Actions", "Или обучи локально и закоммить artifacts/")
 
-        if uploaded is None:
-            st.info("Загрузи CSV в панели слева.")
-            return
-        if not run:
-            st.info("Нажми «Рассчитать прогноз».")
-            return
+    st.divider()
 
-        user_df = pd.read_csv(uploaded)
-        cols = {c.lower(): c for c in user_df.columns}
+    # Plot + scenario summary
+    left, right = st.columns([2, 1])
 
-        if "date" not in cols or "sales" not in cols:
-            st.error("CSV должен содержать столбцы date и sales")
-            return
-
-        user_df[cols["date"]] = pd.to_datetime(user_df[cols["date"]])
-        user_df = user_df.sort_values(cols["date"]).rename(columns={cols["date"]: "date", cols["sales"]: "sales"})
-
-        # нормализуем возможное имя promo -> promo_flag
-        if "promo" in cols and "promo_flag" not in user_df.columns:
-            user_df = user_df.rename(columns={cols["promo"]: "promo_flag"})
-        if "promo_flag" not in user_df.columns:
-            user_df["promo_flag"] = 0
-
-        # optional columns
-        if "price" not in user_df.columns:
-            user_df["price"] = 10.0
-        if "discount_pct" not in user_df.columns:
-            user_df["discount_pct"] = 0.0
-        if "is_weekend" not in user_df.columns:
-            user_df["is_weekend"] = (user_df["date"].dt.weekday >= 5).astype(int)
-        if "is_holiday" not in user_df.columns:
-            user_df["is_holiday"] = 0
-
-        last_date = user_df["date"].iloc[-1]
-        fut_dates = [last_date + timedelta(days=i + 1) for i in range(int(horizon))]
-        base_pred = moving_average_future(user_df["sales"].values, horizon=int(horizon), window=7)
-
-        fig = plot_history_forecast(
-            user_df["date"].tail(180),
-            user_df["sales"].tail(180),
-            pd.to_datetime(fut_dates),
-            pred_nn=None,
-            pred_base=base_pred,
-        )
+    with left:
+        st.subheader("📈 История + прогноз")
+        fig = plot_forecast(d_hist, y_hist, d_fut, base, nn, band=band, show_base=show_base, show_nn=show_nn)
         st.pyplot(fig)
-        st.success(
-            "Для пользовательского CSV в MVP используется baseline.\n\n"
-            "Чтобы включить NN для вашего CSV, нужно обучать модель на ваших фичах (или привести фичи к нашему формату)."
+
+    with right:
+        st.subheader("🧾 Параметры")
+        st.write(f"**SKU:** {sku}")
+        st.write(f"**Horizon:** {horizon} дней")
+        st.write(f"**Lookback:** {lookback} дней")
+        st.write("**Сценарий A:**")
+        st.write(f"- Цена x: **{price_mult_a:.2f}**")
+        st.write(f"- Промо дней: **{promo_days_a}** ({'в начале' if promo_where_a_key=='start' else 'в конце'})")
+
+        # Baseline & NN metrics
+        st.divider()
+        st.subheader("📊 Метрики (на тесте)")
+        bm = load_baseline_metrics_for_sku(sku)
+        if bm:
+            st.caption("Baseline MA(7)")
+            st.json(bm)
+
+        if nn_metrics:
+            st.caption("LSTM")
+            st.json(nn_metrics)
+
+        # Anomaly / sanity checks
+        if nn is not None:
+            if np.any(np.isnan(nn)) or np.any(np.isinf(nn)):
+                st.warning("В прогнозе есть NaN/Inf — проверь обучение/артефакты.")
+            if float(np.max(nn)) > float(np.max(hist["sales"].tail(180))) * 3.0:
+                st.warning("Прогноз слишком высок по сравнению с историей — возможно сценарий/данные дают всплеск.")
+
+    # Scenario B comparison
+    if enable_b and pack is not None:
+        st.divider()
+        st.subheader("🆚 Сравнение сценариев A vs B (LSTM)")
+
+        model, fs, ts, fcols, h_ckpt, _ = pack
+        fut_b = make_future_frame(hist, horizon, price_mult_b, promo_days_b, promo_where_b_key)
+        horizon_used = min(horizon, h_ckpt)
+        nn_b = lstm_forecast(model, fs, ts, fcols, hist, fut_b, lookback, horizon_used)
+        if horizon_used < horizon:
+            nn_b = np.pad(nn_b, (0, horizon - horizon_used), constant_values=float(nn_b[-1]))
+
+        cA, cB, cD = st.columns(3)
+        tA, aA, pA, _ = compute_kpis(nn)
+        tB, aB, pB, _ = compute_kpis(nn_b)
+        with cA:
+            card("Сценарий A — сумма", f"{tA:.0f}", f"среднее/день: {aA:.1f}")
+        with cB:
+            card("Сценарий B — сумма", f"{tB:.0f}", f"среднее/день: {aB:.1f}")
+        with cD:
+            delta = tB - tA
+            pct = (delta / max(tA, 1e-6)) * 100.0
+            card("Разница B − A", f"{delta:+.0f}", f"{pct:+.1f}% к сумме горизонта")
+
+        # Plot two scenario lines
+        fig2, ax2 = plt.subplots(figsize=(11, 4))
+        ax2.plot(d_hist, y_hist, label="История", linewidth=2)
+        ax2.plot(fut_a["date"], nn, "--", marker="o", label="LSTM (A)")
+        ax2.plot(fut_b["date"], nn_b, "--", marker="o", label="LSTM (B)")
+        ax2.grid(True)
+        ax2.legend()
+        ax2.set_xlabel("Дата")
+        ax2.set_ylabel("Продажи")
+        fig2.autofmt_xdate()
+        st.pyplot(fig2)
+
+    # Download forecast CSV
+    st.divider()
+    st.subheader("⬇️ Скачать прогноз")
+    out = pd.DataFrame({"date": d_fut})
+    out["baseline_ma7"] = base
+    if nn is not None:
+        out["lstm_forecast"] = nn
+
+    st.download_button(
+        "Скачать CSV прогноза",
+        data=out.to_csv(index=False).encode("utf-8"),
+        file_name=f"forecast_{sku}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+    with st.expander("ℹ️ Как это работает (коротко)", expanded=False):
+        st.write(
+            "- Baseline: скользящее среднее MA(7).\n"
+            "- LSTM: нейросеть обучена на входе **прошлое + будущие экзогенные фичи** (price/promo/calendar).\n"
+            "- Поэтому сценарий (цена/промо) меняет вход → меняется прогноз.\n"
+            "- Метрики считаются на тестовом периоде (time split по датам)."
         )
 
 
