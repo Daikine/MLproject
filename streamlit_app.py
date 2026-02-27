@@ -189,32 +189,57 @@ def lstm_forecast(
     feature_cols: list[str],
 ) -> np.ndarray:
     """
-    Прогноз на horizon дней.
+    Прогноз на horizon дней (multi-step).
 
-    MVP-упрощение:
-    - модель обучалась multi-step → мы берём последнее окно lookback и получаем сразу horizon.
+    Защита от ошибок:
+    - history приводим к DataFrame
+    - add_calendar_feats может вернуть None → тогда оставляем исходный df
+    - гарантируем наличие нужных feature_cols
     """
-    h = history.sort_values("date").tail(lookback).copy()
-    h = add_calendar_feats(h)
+    # 1) гарантируем DataFrame
+    if not isinstance(history, pd.DataFrame):
+        history = pd.DataFrame(history)
 
-    # гарантируем наличие всех колонок
+    h = history.sort_values("date").tail(int(lookback)).copy()
+
+    # 2) календарные фичи
+    try:
+        h2 = add_calendar_feats(h)
+        if isinstance(h2, pd.DataFrame):
+            h = h2
+    except Exception:
+        pass  # просто работаем с тем, что есть
+
+    # 3) гарантируем экзогенные колонки
+    defaults = {
+        "price": 1.0,
+        "promo_flag": 0,
+        "discount_pct": 0.0,
+        "is_weekend": (pd.to_datetime(h["date"]).dt.weekday >= 5).astype(int) if "date" in h.columns else 0,
+        "is_holiday": 0,
+        "dow_sin": 0.0,
+        "dow_cos": 0.0,
+        "month_sin": 0.0,
+        "month_cos": 0.0,
+        "sales": 0.0,
+    }
+
     for col in feature_cols:
         if col not in h.columns:
-            # если чего-то нет, подставим ноль/1
-            if col in ("price",):
-                h[col] = 1.0
-            else:
-                h[col] = 0.0
+            val = defaults.get(col, 0.0)
+            # если val серия (как is_weekend), то длина должна совпадать
+            h[col] = val
 
-    X = h[feature_cols].values.astype(float)
+    # 4) формируем окно
+    X = h[feature_cols].to_numpy(dtype=float)
     Xs = feature_scaler.transform(X)
 
     x_tensor = torch.tensor(Xs, dtype=torch.float32).unsqueeze(0)  # (1, T, F)
-    pred_scaled = model(x_tensor).squeeze(0).numpy()  # (horizon_from_ckpt,)
+    pred_scaled = model(x_tensor).squeeze(0).cpu().numpy()  # (horizon_ckpt,)
 
     pred = target_scaler.inverse_transform(pred_scaled.reshape(-1, 1)).reshape(-1)
     pred = np.maximum(pred, 0.0)
-    return pred[:horizon]
+    return pred[: int(horizon)]
 
 
 def moving_average_future(history_sales: np.ndarray, horizon: int, window: int = 7) -> np.ndarray:
