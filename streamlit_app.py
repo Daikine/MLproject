@@ -290,38 +290,45 @@ def main():
     skus = sorted(df["sku"].unique())
 
     # Sidebar controls
-    with st.sidebar:
-        st.header("⚙️ Управление")
-        sku = st.selectbox("SKU", skus)
-        horizon = st.slider("Горизонт (дней)", 7, 14, 14)
-        lookback = st.slider("Окно истории (lookback)", 14, 60, 28)
+    # --- Responsive controls (works on phone + desktop) ---
+if "run_clicked" not in st.session_state:
+    st.session_state.run_clicked = False
 
-        st.markdown("---")
-        st.subheader("Отображение")
-        show_base = st.toggle("Показывать Baseline", value=True)
-        show_nn = st.toggle("Показывать LSTM", value=True)
+# Кнопка всегда видна (и на телефоне тоже)
+top_left, top_right = st.columns([1, 1])
+with top_left:
+    st.markdown("### ⚙️ Управление")
+with top_right:
+    st.session_state.run_clicked = st.button("🚀 Рассчитать прогноз", use_container_width=True)
 
-        st.markdown("---")
-        st.subheader("Сценарий (A)")
-        price_mult_a = st.number_input("Цена x (A)", 0.5, 2.0, 1.0, 0.05)
-        promo_days_a = st.slider("Промо дней (A)", 0, 14, 0)
-        promo_where_a = st.radio("Промо где (A)", ["В начале", "В конце"], horizontal=True)
-        promo_where_a_key = "start" if promo_where_a == "В начале" else "end"
+# Параметры прячем в expander — он отлично работает на телефоне
+with st.expander("⚙️ Параметры (нажми, чтобы открыть)", expanded=True):
+    sku = st.selectbox("SKU", skus, key="sku")
+    horizon = st.slider("Горизонт (дней)", 7, 14, 14, key="horizon")
+    lookback = st.slider("Окно истории (lookback)", 14, 60, 28, key="lookback")
 
-        st.markdown("---")
-        st.subheader("Сценарий (B) — сравнение")
-        enable_b = st.toggle("Включить сценарий B", value=False)
-        price_mult_b = st.number_input("Цена x (B)", 0.5, 2.0, 1.1, 0.05, disabled=not enable_b)
-        promo_days_b = st.slider("Промо дней (B)", 0, 14, 7, disabled=not enable_b)
-        promo_where_b = st.radio("Промо где (B)", ["В начале", "В конце"], horizontal=True, disabled=not enable_b)
-        promo_where_b_key = "start" if promo_where_b == "В начале" else "end"
+    st.markdown("---")
+    st.subheader("Отображение")
+    show_base = st.toggle("Показывать Baseline", value=True, key="show_base")
+    show_nn = st.toggle("Показывать LSTM", value=True, key="show_nn")
 
-        st.markdown("---")
-        run = st.button("🚀 Рассчитать прогноз", use_container_width=True)
+    st.markdown("---")
+    st.subheader("Сценарий (A)")
+    price_mult_a = st.number_input("Цена x (A)", 0.5, 2.0, 1.0, 0.05, key="price_mult_a")
+    promo_days_a = st.slider("Промо дней (A)", 0, 14, 0, key="promo_days_a")
+    promo_where_a = st.radio("Промо где (A)", ["В начале", "В конце"], horizontal=True, key="promo_where_a")
+    promo_where_a_key = "start" if promo_where_a == "В начале" else "end"
 
-    if not run:
-        st.info("Выбери SKU и параметры в боковой панели, затем нажми **Рассчитать прогноз**.")
-        st.stop()
+    st.markdown("---")
+    st.subheader("Сценарий (B) — сравнение")
+    enable_b = st.toggle("Включить сценарий B", value=False, key="enable_b")
+    price_mult_b = st.number_input("Цена x (B)", 0.5, 2.0, 1.1, 0.05, disabled=not enable_b, key="price_mult_b")
+    promo_days_b = st.slider("Промо дней (B)", 0, 14, 7, disabled=not enable_b, key="promo_days_b")
+    promo_where_b = st.radio("Промо где (B)", ["В начале", "В конце"], horizontal=True, disabled=not enable_b, key="promo_where_b")
+    promo_where_b_key = "start" if promo_where_b == "В начале" else "end"
+
+# Run button state
+run = bool(st.session_state.run_clicked)
 
     # History
     hist = df[df["sku"] == sku].sort_values("date").reset_index(drop=True)
