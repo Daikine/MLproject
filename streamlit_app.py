@@ -284,7 +284,7 @@ def main():
     skus = sorted(df["sku"].unique())
 
     # Sidebar controls
-    with st.sidebar:
+ with st.sidebar:
     st.header("⚙️ Управление")
     sku = st.selectbox("SKU", skus)
     horizon = st.slider("Горизонт (дней)", 7, 14, 14)
