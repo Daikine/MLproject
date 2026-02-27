@@ -31,10 +31,9 @@ def inject_css():
           /* Page width */
           .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
 
-          /* Hide Streamlit chrome */
+          /* Hide Streamlit chrome BUT keep header so sidebar toggle exists */
           #MainMenu {visibility: hidden;}
           footer {visibility: hidden;}
-          header {visibility: hidden;}
 
           /* Cards */
           .card {
@@ -48,23 +47,18 @@ def inject_css():
           .card .big { font-size: 1.45rem; font-weight: 700; margin: 0; }
           .muted { color: rgba(49, 51, 63, 0.65); font-size: 0.9rem; }
 
-          /* Buttons */
           div.stButton>button {
             border-radius: 12px;
             padding: 0.6rem 1rem;
             font-weight: 600;
           }
 
-          /* Tabs spacing */
           button[data-baseweb="tab"] { font-size: 0.95rem; }
-
-          /* Nice separators */
           hr { margin: 1rem 0; }
         </style>
         """,
         unsafe_allow_html=True,
     )
-
 
 # ---------------------------
 # Data / model loading
