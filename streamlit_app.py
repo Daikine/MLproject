@@ -377,14 +377,14 @@ def main():
         st.pyplot(fig)
 
     with right:
-    st.subheader("🧾 Параметры")
-    st.write(f"**SKU:** {sku}")
-    st.write(f"**Horizon:** {horizon} дней")
-    st.write(f"**Lookback:** {lookback} дней")
+     st.subheader("🧾 Параметры")
+     st.write(f"**SKU:** {sku}")
+     st.write(f"**Horizon:** {horizon} дней")
+     st.write(f"**Lookback:** {lookback} дней")
 
-    st.write("**Сценарий A:**")
-    st.write(f"- Цена x: **{price_mult_a:.2f}**")
-    st.write(f"- Промо дней: **{promo_days_a}** ({'в начале' if promo_where_a_key=='start' else 'в конце'})")
+     st.write("**Сценарий A:**")
+     st.write(f"- Цена x: **{price_mult_a:.2f}**")
+     st.write(f"- Промо дней: **{promo_days_a}** ({'в начале' if promo_where_a_key=='start' else 'в конце'})")
 
     # Метрики показываем только если включён тумблер
     if show_metrics:
