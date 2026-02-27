@@ -1,0 +1,63 @@
+name: Train model artifacts
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ["main"]
+    paths:
+      - "data/**"
+      - "src/**"
+      - "requirements.txt"
+      - "streamlit_app.py"
+      - ".github/workflows/train.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate synthetic data
+        run: |
+          python data/generate_data.py --output data/sales.csv --days 1100 --skus 5 --seed 42
+
+      - name: Train baselines
+        run: |
+          python -m src.evaluate_baselines --data data/sales.csv --lookback 30 --test-days 120
+
+      - name: Train PyTorch LSTM
+        run: |
+          python -m src.train_torch --data data/sales.csv --lookback 28 --horizon 14 --test-days 120 --val-days 60 --epochs 15 --batch 512 --device cpu
+
+      - name: Build report figures
+        run: |
+          python -m src.report --data data/sales.csv --sku SKU_01
+
+      - name: Commit artifacts back to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add data/sales.csv artifacts reports/figures || true
+
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+
+          git commit -m "Auto-train: update artifacts and reports"
+          git push
