@@ -285,39 +285,34 @@ def main():
 
     # Sidebar controls
     with st.sidebar:
-        st.header("⚙️ Управление")
-        sku = st.selectbox("SKU", skus)
-        horizon = st.slider("Горизонт (дней)", 7, 14, 14)
-        lookback = st.slider("Окно истории (lookback)", 14, 60, 28)
+    st.header("⚙️ Управление")
+    sku = st.selectbox("SKU", skus)
+    horizon = st.slider("Горизонт (дней)", 7, 14, 14)
+    lookback = st.slider("Окно истории (lookback)", 14, 60, 28)
 
-        st.markdown("---")
-        st.subheader("Отображение")
-        show_metrics = st.toggle("Показывать метрики", value=False)
-        show_base = st.toggle("Показывать Baseline", value=True)
-        show_nn = st.toggle("Показывать LSTM", value=True)
+    st.markdown("---")
+    st.subheader("Отображение")
+    show_base = st.toggle("Показывать Baseline", value=True)
+    show_nn = st.toggle("Показывать LSTM", value=True)
+    show_metrics = st.toggle("Показывать метрики (на тесте)", value=False)
 
-        st.markdown("---")
-        st.subheader("Сценарий (A)")
-        price_mult_a = st.number_input("Цена x (A)", 0.5, 2.0, 1.0, 0.05)
-        promo_days_a = st.slider("Промо дней (A)", 0, 14, 0)
-        promo_where_a = st.radio("Промо где (A)", ["В начале", "В конце"], horizontal=True)
-        promo_where_a_key = "start" if promo_where_a == "В начале" else "end"
+    st.markdown("---")
+    st.subheader("Сценарий (A)")
+    price_mult_a = st.number_input("Цена x (A)", 0.5, 2.0, 1.0, 0.05)
+    promo_days_a = st.slider("Промо дней (A)", 0, 14, 0)
+    promo_where_a = st.radio("Промо где (A)", ["В начале", "В конце"], horizontal=True)
+    promo_where_a_key = "start" if promo_where_a == "В начале" else "end"
 
-        st.markdown("---")
-        st.subheader("Сценарий (B) — сравнение")
-        enable_b = st.toggle("Включить сценарий B", value=False)
-        price_mult_b = st.number_input("Цена x (B)", 0.5, 2.0, 1.1, 0.05, disabled=not enable_b)
-        promo_days_b = st.slider("Промо дней (B)", 0, 14, 7, disabled=not enable_b)
-        promo_where_b = st.radio("Промо где (B)", ["В начале", "В конце"], horizontal=True, disabled=not enable_b)
-        promo_where_b_key = "start" if promo_where_b == "В начале" else "end"
+    st.markdown("---")
+    st.subheader("Сценарий (B) — сравнение")
+    enable_b = st.toggle("Включить сценарий B", value=False)
+    price_mult_b = st.number_input("Цена x (B)", 0.5, 2.0, 1.1, 0.05, disabled=not enable_b)
+    promo_days_b = st.slider("Промо дней (B)", 0, 14, 7, disabled=not enable_b)
+    promo_where_b = st.radio("Промо где (B)", ["В начале", "В конце"], horizontal=True, disabled=not enable_b)
+    promo_where_b_key = "start" if promo_where_b == "В начале" else "end"
 
-        st.markdown("---")
-        run = st.button("🚀 Рассчитать прогноз", use_container_width=True)
-
-    if not run:
-        st.info("Выбери SKU и параметры в боковой панели, затем нажми **Рассчитать прогноз**.")
-        st.stop()
-
+    st.markdown("---")
+    run = st.button("🚀 Рассчитать прогноз", use_container_width=True)
     # History
     hist = df[df["sku"] == sku].sort_values("date").reset_index(drop=True)
     d_hist = hist["date"].tail(180)
@@ -382,26 +377,28 @@ def main():
         st.pyplot(fig)
 
     with right:
-        st.subheader("🧾 Параметры")
-        st.write(f"**SKU:** {sku}")
-        st.write(f"**Horizon:** {horizon} дней")
-        st.write(f"**Lookback:** {lookback} дней")
-        st.write("**Сценарий A:**")
-        st.write(f"- Цена x: **{price_mult_a:.2f}**")
-        st.write(f"- Промо дней: **{promo_days_a}** ({'в начале' if promo_where_a_key=='start' else 'в конце'})")
+    st.subheader("🧾 Параметры")
+    st.write(f"**SKU:** {sku}")
+    st.write(f"**Horizon:** {horizon} дней")
+    st.write(f"**Lookback:** {lookback} дней")
 
-        # Baseline & NN metrics
+    st.write("**Сценарий A:**")
+    st.write(f"- Цена x: **{price_mult_a:.2f}**")
+    st.write(f"- Промо дней: **{promo_days_a}** ({'в начале' if promo_where_a_key=='start' else 'в конце'})")
+
+    # Метрики показываем только если включён тумблер
+    if show_metrics:
         st.divider()
-        if show_metrics:
-          st.subheader("📊 Метрики (на тесте)")
-          bm = load_baseline_metrics_for_sku(sku)
-         if bm:
-           st.caption("Baseline MA(7)")
-           st.json(bm)
+        st.subheader("📊 Метрики (на тесте)")
 
-         if nn_metrics:
-          st.caption("LSTM")
-          st.json(nn_metrics)
+        bm = load_baseline_metrics_for_sku(sku)
+        if bm:
+            st.caption("Baseline MA(7)")
+            st.json(bm)
+
+        if nn_metrics:
+            st.caption("LSTM")
+            st.json(nn_metrics)
 
         # Anomaly / sanity checks
         if nn is not None:
