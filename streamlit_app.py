@@ -287,8 +287,6 @@ def main():
     with st.sidebar:
      st.header("⚙️ Управление")
      sku = st.selectbox("SKU", skus)
-     horizon = st.slider("Горизонт (дней)", 7, 14, 14)
-     lookback = st.slider("Окно истории (lookback)", 14, 60, 28)
 
      st.markdown("---")
      st.subheader("Отображение")
