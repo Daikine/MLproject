@@ -96,7 +96,7 @@ def load_nn_for_sku(sku: str):
 
     model = LSTMForecaster(
         n_features=len(feature_cols),
-        hidden_size=64,
+        hidden_size=128,
         num_layers=2,
         dropout=0.1,
         horizon=horizon_ckpt,
