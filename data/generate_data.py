@@ -65,9 +65,9 @@ def generate(
 
     if start is None:
         # последние N дней до "сегодня"
-        start = date.today() - timedelta(days=days)
+        start = date.today() - timedelta(days=days) #счиатем начальную дату, с помощью timedelta, буквально считает разницу между датами
 
-    dates = [start + timedelta(days=i) for i in range(days)]
+    dates = [start + timedelta(days=i) for i in range(days)] #массив дат из 1100
 
     # зададим параметры на SKU (псевдослучайные)
     params: list[SkuParams] = []
@@ -90,6 +90,8 @@ def generate(
         sku = f"SKU_{sku_idx+1:02d}"
         p = params[sku_idx]
 
+        # индивидуальная "любимая" фаза сезонности
+        weekly_phase = rng.uniform(0, 2 * math.pi) # это че, мы задаем просто на синусоиде определенную точку в которой у нас будет максимум недельный и годичный?
         
         weekly_phase = rng.uniform(0, 2 * math.pi)
         yearly_phase = rng.uniform(0, 2 * math.pi)
@@ -97,15 +99,15 @@ def generate(
         price = p.price_base
 
         for t, d in enumerate(dates):
-            dow = d.weekday()  # 0..6
+            dow = d.weekday()  # 0..6, разобрать что такое weekday? это функция, если да то откудда и что делает? что вообще за обозначение dow почему оно? видмо это  day of week и это буквально какой у нас день недели
             is_weekend = int(dow >= 5)
 
-            holidays = _simple_holidays(d.year)
+            holidays = _simple_holidays(d.year) #как у нас тут задается year в этой функции
             is_holiday = int(d in holidays)
 
            
             price_shock = rng.normal(0.0, p.price_vol)
-            price = max(0.5, price * (1.0 + price_shock))
+            price = max(0.5, price * (1.0 + price_shock)) #разобрать эту формулу подробно
 
             # промо события
             # вероятность старта промо
@@ -124,13 +126,13 @@ def generate(
             discount_pct = float(rng.uniform(0.05, 0.35)) if promo_flag else 0.0
 
             # недельная сезонность (синус + "пятница/сб" часто выше)
-            weekly = 1.0 + p.weekly_amp * math.sin(2 * math.pi * (dow / 7.0) + weekly_phase)
+            weekly = 1.0 + p.weekly_amp * math.sin(2 * math.pi * (dow / 7.0) + weekly_phase) #разобрать эту формулу подробно
             if dow in (4, 5):  # пятница/суббота
                 weekly *= 1.05
 
             # годовая сезонность
             day_of_year = (d - date(d.year, 1, 1)).days
-            yearly = 1.0 + p.yearly_amp * math.sin(2 * math.pi * (day_of_year / 365.25) + yearly_phase)
+            yearly = 1.0 + p.yearly_amp * math.sin(2 * math.pi * (day_of_year / 365.25) + yearly_phase) #разобрать эту формулу подробно
 
             # тренд
             trend = 1.0 + p.trend_per_day * t
