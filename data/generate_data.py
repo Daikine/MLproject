@@ -39,10 +39,6 @@ class SkuParams:
 
 
 def _simple_holidays(year: int) -> set[date]:
-    """
-    Упрощённый набор праздников (без привязки к стране).
-    Нужен, чтобы в данных был эффект "праздников".
-    """
     return {
         date(year, 1, 1),   
         date(year, 1, 7),   
@@ -120,10 +116,10 @@ def generate(
             # а эффект скидки задаём через discount_pct как функцию дня.
             promo_flag = int(promo_len > 0)
 
-            # скидка: если промо, то скидка 5-35%
+            # если промо, то скидка 5-35%
             discount_pct = float(rng.uniform(0.05, 0.35)) if promo_flag else 0.0
 
-            # недельная сезонность (синус + "пятница/сб" часто выше)
+            # недельная сезонность 
             weekly = 1.0 + p.weekly_amp * math.sin(2 * math.pi * (dow / 7.0) + weekly_phase)
             if dow in (4, 5):  # пятница/суббота
                 weekly *= 1.05
@@ -148,18 +144,18 @@ def generate(
                 promo_mult *= p.promo_lift
                 promo_mult *= (1.0 + p.discount_elasticity * discount_pct)
 
-            # эффект цены (чем выше цена — тем ниже спрос), простая эластичность
+            # эффект цены 
             # нормируем на базовую цену
             price_mult = (p.price_base / price) ** 0.35
 
             # базовый спрос
             demand_mean = p.base_demand * weekly * yearly * trend * cal_mult * promo_mult * price_mult
 
-            # редкие всплески спроса (PR-кампании)
+            # редкие всплески спроса 
             if rng.random() < 0.01:
                 demand_mean *= float(rng.uniform(1.3, 2.2))
 
-            # редкие stockout (нет товара на складе)
+            # редкие stockout 
             if rng.random() < 0.006:
                 demand_mean *= float(rng.uniform(0.0, 0.15))
 
