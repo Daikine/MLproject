@@ -5,55 +5,82 @@ from torch import nn
 
 
 class LSTMForecaster(nn.Module):
-    """
-    Seq2seq LSTM для прогноза спроса.
-
-    Encoder читает историю, decoder читает будущие известные признаки.
-    В голову дополнительно подаём последнее значение sales, чтобы модель
-    не теряла уровень ряда.
-    """
-
     def __init__(
         self,
         n_features: int,
-        hidden_size: int = 64,
+        hidden_size: int = 128,
         num_layers: int = 2,
-        dropout: float = 0.1,
+        dropout: float = 0.2,
         horizon: int = 14,
     ):
         super().__init__()
-        self.horizon = horizon
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
 
         self.encoder = nn.LSTM(
-            input_size=n_features,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
+            n_features,
+            hidden_size,
+            num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0.0,
         )
 
-        self.decoder = nn.LSTM(
-            input_size=n_features,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
+        self.decoder = nn.GRU(
+            n_features,
+            hidden_size,
+            num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0.0,
         )
+
+        self.norm = nn.LayerNorm(hidden_size)
 
         self.head = nn.Sequential(
-            nn.Linear(hidden_size + 1, hidden_size),
+            nn.Linear(hidden_size + 5, hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size, 1),
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, 1),
         )
 
     def forward(self, x_past: torch.Tensor, x_future: torch.Tensor) -> torch.Tensor:
         _, (h, c) = self.encoder(x_past)
-        dec_out, _ = self.decoder(x_future, (h, c))
 
-        # последнее известное значение sales подаём в голову как якорь уровня
-        last_sales = x_past[:, -1:, 0:1].expand(-1, dec_out.size(1), -1)
-        y = self.head(torch.cat([dec_out, last_sales], dim=-1)).squeeze(-1)
-        return y
+        dec, _ = self.decoder(x_future, h)
+        dec = self.norm(dec)
+
+        last_sales = x_past[:, -1:, 0:1].expand(-1, dec.size(1), -1)
+
+        lag7 = (
+            x_past[:, -7:, 0]
+            .mean(1, keepdim=True)
+            .unsqueeze(-1)
+            .expand(-1, dec.size(1), -1)
+        )
+
+        lag14 = (
+            x_past[:, -14:, 0]
+            .mean(1, keepdim=True)
+            .unsqueeze(-1)
+            .expand(-1, dec.size(1), -1)
+        )
+
+        std = (
+            x_past[:, :, 0]
+            .std(1, keepdim=True)
+            .unsqueeze(-1)
+            .expand(-1, dec.size(1), -1)
+        )
+
+        trend = (
+            x_past[:, -1:, 0:1] - x_past[:, :7, 0:1].mean(1, keepdim=True)
+        ).expand(-1, dec.size(1), -1)
+
+        x = torch.cat(
+            [dec, last_sales, lag7, lag14, std, trend],
+            dim=-1,
+        )
+
+        # ВАЖНО: здесь нельзя ставить torch.relu(...)
+        # Модель предсказывает стандартизированный log1p(sales),
+       
+        return self.head(x).squeeze(-1)
