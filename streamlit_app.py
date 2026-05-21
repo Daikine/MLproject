@@ -77,45 +77,96 @@ def load_data() -> pd.DataFrame:
     df["is_weekend"] = (df["date"].dt.weekday >= 5).astype(int)
     return df
 
-# ИСПРАВЛЕНО: добавили возврат lookback_ckpt
 def load_nn_for_sku(sku: str):
     sku_dir = ART_DIR / sku
+
     model_path = sku_dir / "model.pt"
     fs_path = sku_dir / "feature_scaler.joblib"
     ts_path = sku_dir / "target_scaler.joblib"
     metrics_path = sku_dir / "metrics_nn.json"
 
-    if not (model_path.exists() and fs_path.exists() and ts_path.exists()):
+    if not (
+        model_path.exists()
+        and fs_path.exists()
+        and ts_path.exists()
+    ):
         return None
 
-    ckpt = torch.load(model_path, map_location="cpu")
-    calib = ckpt.get("calibration", None)
-    feature_cols = ckpt.get("feature_cols", FEATURE_COLS)
-    lookback_ckpt = int(ckpt.get("lookback", 28))
-    horizon_ckpt = int(ckpt.get("horizon", 14))
-    hidden_size = int(ckpt.get("hidden_size", 64))
-    num_layers = int(ckpt.get("num_layers", 2))
-    target_transform = str(ckpt.get("target_transform", "identity"))
+    ckpt = torch.load(
+        model_path,
+        map_location="cpu",
+    )
+
+    feature_cols = ckpt.get(
+        "feature_cols",
+        FEATURE_COLS,
+    )
+
+    lookback_ckpt = int(
+        ckpt.get("lookback", 60)
+    )
+
+    horizon_ckpt = int(
+        ckpt.get("horizon", 14)
+    )
+
+    target_transform = str(
+        ckpt.get(
+            "target_transform",
+            "identity",
+        )
+    )
+
+    state_dict = ckpt["state_dict"]
+
+    # В старых артефактах hidden_size мог быть сохранён неверно.
+    # Поэтому безопаснее восстановить размер hidden layer прямо из весов.
+    inferred_hidden_size = int(
+        state_dict["encoder.weight_hh_l0"].shape[1]
+    )
 
     model = LSTMForecaster(
         n_features=len(feature_cols),
-        hidden_size=hidden_size,
-        num_layers=num_layers,
-        dropout=0.1,
+        hidden_size=inferred_hidden_size,
+        num_layers=int(ckpt.get("num_layers", 2)),
+        dropout=0.2,
         horizon=horizon_ckpt,
     )
-    model.load_state_dict(ckpt["state_dict"])
+
+    model.load_state_dict(
+        state_dict,
+        strict=False,
+    )
+
     model.eval()
-    model.calibration = ckpt.get("calibration", None)
+
+    model.calibration = ckpt.get(
+        "calibration",
+        None,
+    )
 
     fs = joblib.load(fs_path)
     ts = joblib.load(ts_path)
 
     nn_metrics = None
-    if metrics_path.exists():
-        nn_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
 
-    return model, fs, ts, list(feature_cols), lookback_ckpt, horizon_ckpt, target_transform, nn_metrics
+    if metrics_path.exists():
+        nn_metrics = json.loads(
+            metrics_path.read_text(
+                encoding="utf-8",
+            )
+        )
+
+    return (
+        model,
+        fs,
+        ts,
+        list(feature_cols),
+        lookback_ckpt,
+        horizon_ckpt,
+        target_transform,
+        nn_metrics,
+    )
 
 
 @st.cache_resource
